@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,8 +11,8 @@ import (
 )
 
 type Client struct {
-	next_req_token      string
-	messages_to_deliver []string
+	Next_req_token      *string
+	Messages_to_deliver []string
 }
 
 func makeToken(length int) string {
@@ -26,6 +27,33 @@ func makeToken(length int) string {
 	s := base64.StdEncoding.EncodeToString(b)
 
 	return s
+}
+
+func syncToClient(body string, nt string, clients map[string]Client) {
+
+	http.HandleFunc("/sync/"+nt, func(w http.ResponseWriter, r *http.Request) {
+
+		if r.Method == http.MethodGet {
+
+			// Set the Content-Type header to application/json
+			w.Header().Set("Content-Type", "application/json")
+
+			nt := makeToken((8))
+			*clients[string(body)].Next_req_token = nt
+
+			// Encode the object as JSON and write it to the response
+			err := json.NewEncoder(w).Encode(clients[string(body)])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			go syncToClient(string(body), nt, clients)
+
+		}
+
+	})
+
 }
 
 func main() {
@@ -66,11 +94,18 @@ func main() {
 			nt := makeToken(8)
 
 			clients[string(body)] = Client{
-				next_req_token:      nt,
-				messages_to_deliver: nil,
+				Next_req_token:      &nt,
+				Messages_to_deliver: nil,
 			}
 
-			println(clients[string(body)].next_req_token)
+			// Encode the object as JSON and write it to the response
+			er := json.NewEncoder(w).Encode(clients[string(body)])
+			if er != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			go syncToClient(string(body), nt, clients)
 
 		}
 
