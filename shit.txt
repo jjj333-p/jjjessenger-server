@@ -1,0 +1,22 @@
+	// http.HandleFunc("/sync/"+nt, func(w http.ResponseWriter, r *http.Request) {
+
+	// 	if r.Method == http.MethodGet {
+
+	// 		// Set the Content-Type header to application/json
+	// 		w.Header().Set("Content-Type", "application/json")
+
+	// 		nt := makeToken((8))
+	// 		*clients[string(body)].NextReqToken = nt
+
+	// 		// Encode the object as JSON and write it to the response
+	// 		err := json.NewEncoder(w).Encode(clients[string(body)])
+	// 		if err != nil {
+	// 			http.Error(w, err.Error(), http.StatusInternalServerError)
+	// 			return
+	// 		}
+
+	// 		go syncToClient(string(body), nt, clients)
+
+	// 	}
+
+	// })

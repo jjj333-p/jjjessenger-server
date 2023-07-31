@@ -1,19 +1,36 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
+	"encoding/gob"
 	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/render"
 )
 
 type Client struct {
-	Next_req_token      *string
-	Messages_to_deliver []string
+	NextReqToken      string
+	MessagesToDeliver []string
 }
+
+type ErrResponse struct {
+	Err            error `json:"-"` // low-level runtime error
+	HTTPStatusCode int   `json:"-"` // http response status code
+
+	StatusText string `json:"status"`          // user-level status message
+	AppCode    int64  `json:"code,omitempty"`  // application-specific error code
+	ErrorText  string `json:"error,omitempty"` // application-level error message, for debugging
+}
+
+var clients = make(map[string]*Client)
+
+var syncTokens = make(map[string]string)
+
+var tmpTokenLength = 8
 
 func makeToken(length int) string {
 	// Generate random bytes
@@ -29,87 +46,94 @@ func makeToken(length int) string {
 	return s
 }
 
-func syncToClient(body string, nt string, clients map[string]Client) {
+func SyncToClient(hw http.ResponseWriter, hr *http.Request) {
 
-	http.HandleFunc("/sync/"+nt, func(w http.ResponseWriter, r *http.Request) {
+	//pull the token from the url
+	syncToken := chi.URLParam(hr, "syncToken")
 
-		if r.Method == http.MethodGet {
+	//fetch the identity from the map
+	identity := syncTokens[syncToken]
 
-			// Set the Content-Type header to application/json
-			w.Header().Set("Content-Type", "application/json")
+	//purge that token's entry from the map for memory efficency
+	delete(syncTokens, syncToken)
 
-			nt := makeToken((8))
-			*clients[string(body)].Next_req_token = nt
+	nt := makeToken(tmpTokenLength)
 
-			// Encode the object as JSON and write it to the response
-			err := json.NewEncoder(w).Encode(clients[string(body)])
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+	//if couldnt find an identity for that token its unauthed
+	if clients[identity] == nil {
 
-			go syncToClient(string(body), nt, clients)
+		hw.Write([]byte("401 Unauthorized"))
 
-		}
+		return
 
-	})
+	}
+
+	clients[identity].NextReqToken = nt
+
+	//make temporary sync token point to the object with the identity
+	syncTokens[nt] = identity
+
+	// Create a buffer to hold the encoded data
+	buf := new(bytes.Buffer)
+
+	// Create a new encoder and encode the client obj
+	enc := gob.NewEncoder(buf)
+	err := enc.Encode(clients[identity])
+	if err != nil {
+		panic(err)
+	}
+
+	//return the object
+	hw.Write(buf.Bytes())
+
+	//clear the queue of messages
+	clients[identity].MessagesToDeliver = []string{}
+
+}
+
+func getIdentity(hw http.ResponseWriter, hr *http.Request) {
+
+	//internal server identity
+	identity := chi.URLParam(hr, "pubKey")
+
+	//sync token
+	nt := makeToken(tmpTokenLength)
+
+	//create new client with that identity
+	client := Client{
+		NextReqToken:      nt,
+		MessagesToDeliver: nil,
+	}
+	clients[identity] = &client
+
+	//make temporary sync token point to the object with the identity
+	syncTokens[nt] = identity
+
+	//respond to get request with the next sync token
+	hw.Write([]byte(nt))
 
 }
 
 func main() {
 
-	clients := make(map[string]Client)
+	r := chi.NewRouter()
 
-	//for testing
-	http.HandleFunc("/post", func(w http.ResponseWriter, r *http.Request) {
+	//log for testing
+	r.Use(middleware.Logger)
 
-		if r.Method == http.MethodPost {
+	//help handle errors?
+	r.Use(middleware.Recoverer)
 
-			body, err := io.ReadAll(r.Body)
+	//idk
+	r.Use(middleware.URLFormat)
+	r.Use(render.SetContentType(render.ContentTypeJSON))
 
-			if err != nil {
-				http.Error(w, "Error reading request body", http.StatusInternalServerError)
-			}
+	//dont need to nested call, will just store based on keys in map
+	r.Get("/sync/{syncToken}", SyncToClient)
 
-			fmt.Fprintf(w, "Received POST request with body: %s\n", string(body))
-			println(string(body))
+	//create new identity with the server
+	r.Get("/identity/{pubKey}", getIdentity)
 
-		} else {
+	http.ListenAndServe(":8080", r)
 
-			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-
-		}
-	})
-
-	http.HandleFunc("/getIdentity", func(w http.ResponseWriter, r *http.Request) {
-
-		if r.Method == http.MethodPost {
-
-			body, err := io.ReadAll(r.Body)
-
-			if err != nil {
-				http.Error(w, "Error reading request body", http.StatusInternalServerError)
-			}
-
-			nt := makeToken(8)
-
-			clients[string(body)] = Client{
-				Next_req_token:      &nt,
-				Messages_to_deliver: nil,
-			}
-
-			// Encode the object as JSON and write it to the response
-			er := json.NewEncoder(w).Encode(clients[string(body)])
-			if er != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			go syncToClient(string(body), nt, clients)
-
-		}
-
-	})
-
-	log.Fatal(http.ListenAndServe(":8080", nil))
 }
